@@ -1,0 +1,80 @@
+upstream commit:e5075c0 and 8b9229d
+
+--- a/net/netfilter/nf_flow_table_core.c
++++ b/net/netfilter/nf_flow_table_core.c
+@@ -23,6 +23,18 @@
+ static DEFINE_MUTEX(flowtable_lock);
+ static LIST_HEAD(flowtables);
+ 
++static u32 flow_offload_dst_cookie(struct flow_offload_tuple *flow_tuple)
++{
++	const struct rt6_info *rt;
++
++	if (flow_tuple->l3proto == NFPROTO_IPV6) {
++		rt = (const struct rt6_info *)flow_tuple->dst_cache;
++		return rt6_get_cookie(rt);
++	}
++
++	return 0;
++}
++
+ static void
+ flow_offload_fill_dir(struct flow_offload *flow, struct nf_conn *ct,
+ 		      struct nf_flow_route *route,
+@@ -55,6 +67,7 @@
+ 
+ 	ft->iifidx = other_dst->dev->ifindex;
+ 	ft->dst_cache = dst;
++	ft->dst_cookie = flow_offload_dst_cookie(ft);
+ }
+ 
+ struct flow_offload *
+--- a/net/netfilter/nf_flow_table_ip.c
++++ b/net/netfilter/nf_flow_table_ip.c
+@@ -216,14 +216,6 @@
+ 	return true;
+ }
+ 
+-static int nf_flow_offload_dst_check(struct dst_entry *dst)
+-{
+-	if (unlikely(dst_xfrm(dst)))
+-		return dst_check(dst, 0) ? 0 : -1;
+-
+-	return 0;
+-}
+-
+ static unsigned int nf_flow_xmit_xfrm(struct sk_buff *skb,
+ 				      const struct nf_hook_state *state,
+ 				      struct dst_entry *dst)
+@@ -274,7 +266,7 @@
+ 	if (nf_flow_state_check(flow, ip_hdr(skb)->protocol, skb, thoff))
+ 		return NF_ACCEPT;
+ 
+-	if (nf_flow_offload_dst_check(&rt->dst)) {
++ 	if (!dst_check(&rt->dst, 0)) {
+ 		flow_offload_teardown(flow);
+ 		return NF_ACCEPT;
+ 	}
+@@ -502,7 +494,7 @@
+ 				sizeof(*ip6h)))
+ 		return NF_ACCEPT;
+ 
+-	if (nf_flow_offload_dst_check(&rt->dst)) {
++ 	if (!dst_check(&rt->dst, tuplehash->tuple.dst_cookie)) {
+ 		flow_offload_teardown(flow);
+ 		return NF_ACCEPT;
+ 	}
+--- a/include/net/netfilter/nf_flow_table.h
++++ b/include/net/netfilter/nf_flow_table.h
+@@ -62,7 +62,10 @@
+ 
+ 	u16				mtu;
+ 
+-	struct dst_entry		*dst_cache;
++	struct {
++		struct dst_entry *dst_cache;
++		u32		dst_cookie;
++	};
+ };
+ 
+ struct flow_offload_tuple_rhash {
